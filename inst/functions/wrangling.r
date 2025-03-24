@@ -1,11 +1,5 @@
 # Data wrangling
 
-fil <- here::here("inst","extdata","who",
-                  "hfa-boys-z-who-2007-exp.xlsx"
-                  )
-
-descr <- here::here("inst","extdata","description.xlsx")
-
 fun_read_excel <- function(fil, descr., type = "xlsx") {
 
   descriptor <-
@@ -71,12 +65,17 @@ fun_read_excel <- function(fil, descr., type = "xlsx") {
 
 }
 
+fil <- here::here("inst","extdata","who",
+                  "hfa-boys-perc-who2007-exp (1).xlsx"
+)
+
+descr <- here::here("inst","extdata","description.xlsx")
 
 data_boys <- fun_read_excel(fil, descr) %>% mutate(sex = "male")
 
 
 fil2 <- here::here("inst","extdata","who",
-                  "hfa-girls-z-who-2007-exp.xlsx"
+                  "hfa-girls-perc-who2007-exp (1).xlsx"
 )
 
 data_girls <- fun_read_excel(fil2, descr) %>% mutate(sex = "female")
@@ -89,7 +88,7 @@ data_height_age <- bind_rows( data_boys, data_girls)
 
 
 fil3 <- here::here("inst","extdata","who",
-                  "bmi-boys-z-who-2007-exp.xlsx"
+                  "bmi-boys-perc-who2007-exp.xlsx"
 )
 
 descr <- here::here("inst","extdata","description_bmi.xlsx")
@@ -98,7 +97,7 @@ descr <- here::here("inst","extdata","description_bmi.xlsx")
 data_boys_bmi <- fun_read_excel(fil3, descr) %>% mutate(sex = "male")
 
 fil4 <- here::here("inst","extdata","who",
-                  "bmi-girls-z-who-2007-exp.xlsx"
+                  "bmi-girls-perc-who2007-exp.xlsx"
 )
 
 data_girls_bmi <- fun_read_excel(fil4, descr) %>% mutate(sex = "female")
@@ -107,4 +106,36 @@ data_bmi <- bind_rows( data_boys_bmi, data_girls_bmi)
 
 # cleanup
 rm( data_boys, data_boys_bmi, data_girls, data_girls_bmi)
+
+
+###########
+# Weights
+
+fil5 <- here::here("inst","extdata","who",
+                   "hfa-boys-perc-who2007-exp.xlsx"
+)
+
+
+descr <- here::here("inst","extdata","description_weights.xlsx")
+
+
+data_boys_wght <- fun_read_excel(fil5, descr) %>% mutate(sex = "male")
+
+
+fil6 <- here::here("inst","extdata","who",
+                   "hfa-girls-perc-who2007-exp.xlsx"
+)
+
+
+descr <- here::here("inst","extdata","description_weights.xlsx")
+
+
+data_girls_wght <- fun_read_excel(fil6, descr) %>% mutate(sex = "female")
+
+data_wght <- bind_rows( data_boys_wght, data_girls_wght)
+
+# cleanup
+rm( data_boys_wght, data_girls_wght)
+
+
 
