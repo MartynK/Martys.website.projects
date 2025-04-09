@@ -76,11 +76,6 @@ d <- mvrnorm(100, mu = c(10, 150, 20), Sigma = cor_m) %>%
     bmi = weight / (height / 100)^2
   )
 
-
-
-
-
-
 # Simulate data based on the corr. matrix & linreg equation in the paper
 fun_generate_child_data <- function(N = 100, age = 13, sex = "female") {
 

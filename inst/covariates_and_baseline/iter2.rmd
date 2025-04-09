@@ -1,0 +1,473 @@
+---
+title: "Covariate Adjustments and Baseline Correction in Clinical Trials"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Introduction
+
+Welcome to this scintillating ride through clinical trial simulations! We’ll see how a well-chosen covariate can perform miracles, and how baseline correction can polish up your results. I'll aim to demonstrate **why** would all those things you were thought were good actually are good.
+
+**What we’ll be doing:**
+
+- **Basic two-arm study** with a straightforward treatment effect.
+- **Hiding behind a covariate**: a monstrous driver of outcomes that, if ignored, will make you cry.  
+- **Baseline correction**: The why we're not just analyzing change.  
+- **Spline on baseline** just to be fancy about it.
+
+We’ll do this via simulation;generating data based on a set of rules, because this way we are only limited by RAM and CPU time.
+
+----
+
+```{r}
+    # Keeping global chunk options
+    knitr::opts_chunk$set(echo = TRUE)
+```
+
+----
+
+# 1. The Simplest Study
+
+When you’re brand new to the idea of analyzing two groups, the simplest scenario is one treatment effect, two arms, and normal data. No surprises, no drama.
+
+## Simulation Function
+
+Below, we conjure up a dataset of two arms: *Arm 1* with outcome `y` near 0, *Arm 2* with outcome `y` around `eff`, plus some normal variation. Nothing fancy yet.
+
+```{r, message=FALSE, warning=FALSE}
+    library(emmeans)
+    library(dplyr)
+    library(ggplot2)
+    library(mvtnorm)
+    library(splines)
+    library(effects)
+
+    set.seed(1234)
+
+    # Minimal function: 2 arms, effect 'eff', and noise ~N(0, sd).
+    sim_simplest_study <- function(n_g = 5, eff = 10, sd = 3) {
+      dat <- data.frame(
+        arm = rep(1:2, each = n_g)
+      )
+      dat$y <- 0 + eff * dat$arm + rnorm(nrow(dat), 0, sd)
+      return(dat)
+    }
+
+    dat <- sim_simplest_study()
+    head(dat, 10)
+```
+
+Check the difference with a plain old t-test. Due to the magintude of the effect compared to the variability, its significant:
+
+```{r}
+    t.test(y ~ arm, data = dat)
+```
+
+## Linear Model + emmeans
+
+The `emmeans` package helps us estimate marginal means and contrasts (differences). It also has a more robust approach for degrees of freedom, especially when you have more complex models (this is why its different from the Welch test).
+
+```{r}
+    mod <- lm(y ~ arm, data = dat)
+    emmeans(mod, "arm") %>%
+      contrast("pairwise")
+```
+
+## Repeated Simulations
+
+Of course, one dataset isn’t conclusive when thinking about methodology. Let’s replicate the scenario 200 times and see how often our 95% confidence intervals bracket the true effect.
+
+```{r}
+    n_sim <- 200
+    p_simplest <- data.frame(
+      contrast= rep(NA, n_sim),
+      estimate= rep(NA, n_sim),
+      SE      = rep(NA, n_sim),
+      df      = rep(NA, n_sim),
+      t.ratio = rep(NA, n_sim),
+      p.value = rep(NA, n_sim)
+    )
+
+    # Commenting out the progress bar to keep things simpler:
+    # pb <- txtProgressBar(min = 0, max = n_sim, style = 3)
+
+    for (i in 1:n_sim) {
+      dat <- sim_simplest_study()
+      mod <- lm(y ~ arm, data = dat)
+      p_simplest[i, ] <- emmeans(mod, "arm") %>%
+        contrast("pairwise") %>%
+        as.data.frame()
+      # setTxtProgressBar(pb, i)
+    }
+    # close(pb)
+
+    p_simplest <- p_simplest %>%
+      mutate(
+        ci_low = estimate - 1.96 * SE,
+        ci_upp = estimate + 1.96 * SE
+      ) %>%
+      arrange(estimate) %>%
+      mutate(id = row_number())
+
+
+      p_simplest %>%
+      ggplot(aes(ymin = ci_low, ymax = ci_upp, x = id, y = estimate)) +
+      geom_pointrange() +
+      geom_hline(yintercept = -10, linetype = "dashed", color = "salmon4") +
+      theme_minimal() +
+      labs(x = "Simulation Index", y = "Estimate", 
+           caption = "Dashed line is the true effect = 10 (shown as -10 due to factor coding).")
+
+
+```
+
+*(Yes, the sign might be flipped because of how the factor is coded. Don’t fret; it’s still ±10 in magnitude.)*
+
+----
+
+# 2. Covariate Adjustments
+
+Now let’s get theatrical. Imagine a **huge** driver of the outcome—say a baseline patient trait that 10x-s your little treatment effect. Randomization is your friend, but if you don’t explicitly account for that trait in the analysis, you might need a huge sample size because you would be observing a huge variation in the outcome.
+
+## Simulation Function
+
+```{r}
+    sim_cov_study <- function(n_g = 5, eff = 10, eff_cov = 100, sd = 3) {
+      dat <- data.frame(
+        arm = rep(1:2, each = n_g),
+        cov = rep(1:2, n_g)
+      )
+      # Shuffle the covariate assignment
+      dat$cov <- sample(dat$cov)
+      # The outcome is heavily driven by 'cov'
+      dat$y <- 0 + eff * dat$arm + eff_cov * dat$cov + rnorm(nrow(dat), 0, sd)
+      return(dat)
+    }
+
+    dat <- sim_cov_study()
+```
+
+### Ignoring the Covariate
+
+```{r}
+    t.test(y ~ arm, data = dat)
+```
+
+No significance, because that gargantuan covariate effect which adds to the observed variability of the outcom  is overshadowing the treatment difference. The linear model ignoring the covariate confirms this:
+
+```{r}
+    mod <- lm(y ~ arm, data = dat)
+    emmeans(mod, "arm") %>%
+      contrast("pairwise")
+```
+
+### Including the Covariate
+
+```{r}
+    mod_cov <- lm(y ~ arm + cov, data = dat)
+    emmeans(mod_cov, "arm") %>%
+      contrast("pairwise")
+```
+
+Magically, your effect is back in the limelight. By adjusting for the covariate, you reduce the unexplained variation in your model and more precisely isolate the treatment effect. Applause.
+
+### Simulation
+
+Below is a very nice illustration of the phenomenon.
+
+```{r}
+    set.seed(999)
+    n_sim <- 200
+    p_cov_combined <- data.frame()
+
+    # pb <- txtProgressBar(min = 0, max = n_sim, style = 3)
+
+    for (i in 1:n_sim) {
+      dat <- sim_cov_study(n_g = 10, eff = 10)
+      
+      # Model w/o the covariate
+      mod_nocov <- lm(y ~ arm, data = dat)
+      res_nocov <- emmeans(mod_nocov, "arm") %>%
+        contrast("pairwise") %>%
+        as.data.frame()
+      res_nocov$model <- "No covariate"
+      res_nocov$rep <- i
+
+      # Model w/ the covariate
+      mod_withcov <- lm(y ~ arm + cov, data = dat)
+      res_withcov <- emmeans(mod_withcov, "arm") %>%
+        contrast("pairwise") %>%
+        as.data.frame()
+      res_withcov$model <- "With covariate"
+      res_withcov$rep <- i
+
+      p_cov_combined <- rbind(p_cov_combined, res_nocov, res_withcov)
+      # setTxtProgressBar(pb, i)
+    }
+    # close(pb)
+
+    p_cov_combined <- p_cov_combined %>%
+      mutate(
+        ci_low = estimate - 1.96 * SE,
+        ci_upp = estimate + 1.96 * SE
+      )
+
+    p_cov_combined <- p_cov_combined %>%
+      group_by(model) %>%
+      arrange(estimate, .by_group = TRUE) %>%
+      mutate(id = row_number()) %>%
+      ungroup()
+
+
+      ggplot(p_cov_combined, aes(x = id, y = estimate, ymin = ci_low, ymax = ci_upp)) +
+      geom_pointrange() +
+      facet_wrap(~ model, scales = "free_x") +
+      geom_hline(yintercept = -10, linetype = "dashed", color = "salmon4") +
+      theme_minimal() +
+      labs(
+        x = "Simulation Index",
+        y = "Estimated Contrast (arm2 - arm1)",
+        title = "Covariate? No vs Yes",
+        caption = "Dashed line indicates the true effect of 10 (shown as -10)."
+      )
+
+
+```
+
+Notice how “No covariate” bounces around widely (with "clusters" denoting the per arm distribution of the covariate), whereas “With covariate” aligns with the known effect with a confidence resembling that of the scenario described before.
+
+----
+
+# 3. Baseline Correction
+
+Rather than a single measurement post-randomization, most clinical trials measure an outcome both at baseline and after treatment. We’re often interested in the *change* from baseline; did the change differ for different treatments? 
+
+The baseline is usually somewhat correlated with the follow-up. Including both the baseline and the follow-up value adds information to the model, and since the outcome is correlated with the baseline, a certain amount of variability can be explained by taking it into consideration.
+
+Inputting both baseline and follow-up is actually better than just looking at the change, especially if the follow-up is only loosely correlated with the baseline.
+
+## Simulation
+
+We use a bivariate normal setup for (baseline, follow-up), with some correlation `eff_corr`. For arm 2, the follow-up has an extra `eff` shift. Values are derived from a multivariate normal distribution with a known covriance matrix using the *mvtnorm* package.
+
+```{r}
+    sim_baseline_study <- function(
+        n_g      = 5,       # subjects per arm
+        eff      = 10,      # difference in follow-up for arm2
+        eff_corr = 0.5,     # correlation between baseline & follow-up
+        sd       = 3
+    ) {
+      # Covariance matrix with correlation
+      Sigma <- matrix(
+        c(sd^2, eff_corr * sd^2,
+          eff_corr * sd^2, sd^2),
+        nrow = 2
+      )
+
+      all_data <- list()
+
+      for (arm_id in 1:2) {
+        # mean is (0,0) if arm1, or (0, eff) if arm2
+        mean_vec <- if(arm_id == 1) c(0, 0) else c(0, eff)
+        
+        Y <- rmvnorm(n_g, mean = mean_vec, sigma = Sigma)
+        subject_id <- paste0(arm_id, "_", seq_len(n_g))
+
+        df_arm <- data.frame(
+          id       = subject_id,
+          arm      = factor(arm_id, levels = c(1,2), labels = c("arm1","arm2")),
+          y_before = Y[,1],
+          y_after  = Y[,2]
+        )
+        all_data[[arm_id]] <- df_arm
+      }
+      
+      # Combine, add a change column
+      dat_wide <- do.call(rbind, all_data) %>%
+        mutate(change = y_after - y_before)
+
+      return(dat_wide)
+    }
+
+    set.seed(42)
+    dat <- sim_baseline_study(n_g = 10, eff = 10, eff_corr = 0.6, sd = 3)
+    head(dat[sample(1:nrow(dat)), ], 10)
+```
+
+### Comparing Models
+
+1) **Naive**: just look at `change ~ arm`.
+
+2) **Baseline correction**: look at `y_after ~ arm + y_before`, which can reduce variance when `y_before` is highly predictive.
+
+The second setup results in smaller standard errors.
+
+```{r}
+    mod_simp <- lm(change ~ arm, data = dat)
+    mod_simp %>% effects::predictorEffects(partial.residuals = TRUE) %>% plot(main="No Baseline in Model")
+
+    mod <- lm(y_after ~ arm + y_before, data = dat)
+    mod %>% effects::predictorEffects(partial.residuals = TRUE) %>% plot(main="With Baseline in Model")
+
+    # Quick look at the estimated effect
+    emmeans(mod_simp, ~ arm) %>%
+      contrast("pairwise")
+
+    emmeans(mod, ~ arm) %>%
+      contrast("pairwise")
+```
+
+### Simulation
+
+```{r}
+    set.seed(999)
+    n_sim <- 200
+    res_baseline <- data.frame()
+
+    # pb <- txtProgressBar(min = 0, max = n_sim, style = 3)
+
+    for (i in 1:n_sim) {
+      dat <- sim_baseline_study(n_g = 5, eff = 10, eff_corr = 0.3, sd = 3)
+      
+      # 1) no baseline correction
+      mod_nobc <- lm(change ~ arm, data = dat)
+      tmp_nobc <- emmeans(mod_nobc, ~ arm) %>%
+        contrast("pairwise") %>%
+        as.data.frame()
+      tmp_nobc$model <- "Measuring raw change"
+      tmp_nobc$rep   <- i
+
+      # 2) with baseline correction
+      mod_bc <- lm(y_after ~ arm + y_before, data = dat)
+      tmp_bc <- emmeans(mod_bc, ~ arm) %>%
+        contrast("pairwise") %>%
+        as.data.frame()
+      tmp_bc$model <- "With baseline correction"
+      tmp_bc$rep   <- i
+
+      res_baseline <- rbind(res_baseline, tmp_nobc, tmp_bc)
+      # setTxtProgressBar(pb, i)
+    }
+    # close(pb)
+
+    res_baseline <- res_baseline %>%
+      mutate(ci_low = estimate - 1.96 * SE,
+             ci_upp = estimate + 1.96 * SE)
+
+    res_baseline <- res_baseline %>%
+      group_by(model) %>%
+      arrange(estimate, .by_group = TRUE) %>%
+      mutate(id = row_number()) %>%
+      ungroup()
+
+
+      ggplot(res_baseline, aes(x = id, y = estimate, ymin = ci_low, ymax = ci_upp)) +
+      geom_pointrange() +
+      facet_wrap(~ model, scales = "free_x") +
+      geom_hline(yintercept = -10, linetype = "dashed", color = "salmon4") +
+      theme_minimal() +
+      labs(
+        x = "Simulation Index (sorted by estimate)",
+        y = "Estimated Contrast (arm2 - arm1)",
+        caption = "Dashed line shows the true effect of -10"
+      )
+
+
+```
+
+Yup, baseline correction results in more consistent estimations overall. Using baseline as a covariate typically shrinks standard errors (too).
+
+----
+
+# 4. A Spline for Baseline?
+
+You *could* assume a linear relationship between baseline and outcome. But, lets get greedy, and let the model estimate the relationship with an additional parameter through a natural spline. 
+
+```{r}
+    set.seed(999)
+    n_sim <- 200
+    res_baseline <- data.frame()
+
+    # pb <- txtProgressBar(min = 0, max = n_sim, style = 3)
+
+    for (i in 1:n_sim) {
+      dat <- sim_baseline_study(n_g = 5, eff = 10, eff_corr = 0.3, sd = 3)
+
+      # Linear baseline correction
+      mod_bc <- lm(y_after ~ arm + y_before, data = dat)
+      tmp_bc <- emmeans(mod_bc, ~ arm) %>%
+        contrast("pairwise") %>%
+        as.data.frame()
+      tmp_bc$model <- "Linear baseline correction"
+      tmp_bc$rep   <- i
+
+      # Spline-based correction
+      mod_bcsp <- lm(y_after ~ arm + ns(y_before, df = 2), data = dat)
+      tmp_bcsp <- emmeans(mod_bcsp, ~ arm) %>%
+        contrast("pairwise") %>%
+        as.data.frame()
+      tmp_bcsp$model <- "Spline baseline correction"
+      tmp_bcsp$rep   <- i
+
+      res_baseline <- rbind(res_baseline, tmp_bc, tmp_bcsp)
+      # setTxtProgressBar(pb, i)
+    }
+    # close(pb)
+
+    res_baseline <- res_baseline %>%
+      mutate(ci_low = estimate - 1.96 * SE,
+             ci_upp = estimate + 1.96 * SE)
+
+    res_baseline <- res_baseline %>%
+      group_by(model) %>%
+      arrange(estimate, .by_group = TRUE) %>%
+      mutate(id = row_number()) %>%
+      ungroup()
+
+
+      ggplot(res_baseline, aes(x = id, y = estimate, ymin = ci_low, ymax = ci_upp)) +
+      geom_pointrange() +
+      facet_wrap(~ model, scales = "free_x") +
+      geom_hline(yintercept = -10, linetype = "dashed", color = "salmon4") +
+      theme_minimal() +
+      labs(
+        x = "Simulation Index (sorted by estimate)",
+        y = "Estimated Contrast (arm2 - arm1)",
+        title = "Linear vs. Spline Correction for Baseline",
+        caption = "Dashed line = true effect of -10"
+      )
+
+
+
+
+      res_baseline %>%
+      ggplot(aes(x = estimate, fill = model)) +
+      geom_histogram(bins = 30, position = "dodge", alpha = 0.7) +
+      theme_minimal() +
+      labs(
+        x = "Estimated contrast (arm2 - arm1)",
+        y = "Frequency",
+        fill = "Model",
+        title = "Distribution of Estimated Contrasts"
+      )
+
+
+```
+
+Yeah, we didn't do anything groundbreaking, this seems somewhat less consistent. But it’s a nice demonstration of how flexible modeling can be and to illustrate how to check ideas if you happen to have them.
+
+----
+
+# Wrap-Up
+
+Congrats! You hopefully enjoyed this small a series of simulation-based demos about:
+
+- **Ignoring major covariates**  
+- **Using covariates**: Actually seeing that the treatment effect estimates remain consistent even if the covariates are extreme.  
+- **Baseline corrections**: It seems that investigating change really isnt the best approach.  
+- **Splines**: Because if you can’t add a bit of curve to your model, where’s the fun?
+
+In actual clinical trial practice, you’d *prespecify* whether or not to include these covariates or baseline adjustments. That’s to avoid data snooping and ensure your type I error rate stays honest. 
+
+*(Now go forth and model responsibly!)*
